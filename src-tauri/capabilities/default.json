@@ -1,0 +1,37 @@
+{
+  "identifier": "default",
+  "description": "允许应用访问本地 DeepSeek API、PVFut 服务和 OpenCode Server",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-create",
+    "core:window:allow-close",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "http:default",
+    {
+      "identifier": "http:allow-fetch",
+      "allow": [
+        { "url": "https://api.deepseek.com/**" },
+        { "url": "http://localhost:27000/**" },
+        { "url": "http://127.0.0.1:*/**" }
+      ]
+    },
+    "http:allow-fetch-cancel",
+    "http:allow-fetch-read-body",
+    "http:allow-fetch-send",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "opencode-bin/opencode",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "shell:allow-stdin-write",
+    "shell:allow-kill"
+  ]
+}

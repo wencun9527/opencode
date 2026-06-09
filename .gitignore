@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# OpenCode
+.opencode/
+opencode/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# Archives (临时文件)
+*.zip
+
+# Debug files
+test-debug.html
+aurora-agent-sim.html
+
+# bun node_modules in relay
+relay/node_modules/
+
+# opencode binary
+opencode-bin/
+
+# Codebuddy
+.codebuddy/
