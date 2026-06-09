@@ -1,6 +1,6 @@
 {
   "name": "pvf-tool-relay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/index.ts",
@@ -8,10 +8,14 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.16.0",
     "ws": "^8.18.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/pg": "^8.15.0",
     "@types/ws": "^8.18.0"
   }
 }

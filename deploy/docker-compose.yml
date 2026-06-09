@@ -1,0 +1,89 @@
+# PVF AI Editor - Docker Compose (Phase 2)
+# 使用方式: docker compose up -d
+
+services:
+  # ─── Caddy 反向代理 ───
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      # 域名模式取消注释:
+      # - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      relay:
+        condition: service_healthy
+      opencode:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Tool Relay Service ───
+  relay:
+    build:
+      context: ../relay
+      dockerfile: ../deploy/relay/Dockerfile
+    environment:
+      - RELAY_PORT=9100
+      - TOOL_CALL_TIMEOUT=60000
+      - DATABASE_URL=postgresql://pvf:${DB_PASSWORD:-pvf_secret_2026}@postgres:5432/pvf_ai_editor
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
+      - OPENCODE_INTERNAL_URL=http://opencode:8080
+    expose:
+      - "9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ─── OpenCode Server ───
+  opencode:
+    build:
+      context: .
+      dockerfile: opencode/Dockerfile
+    environment:
+      - OPENCODE_SERVER_PORT=8080
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - MCP_PVFUTILITY_URL=http://relay:9100/mcp
+    expose:
+      - "8080"
+    volumes:
+      - ./opencode/opencode.json:/app/opencode.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ─── PostgreSQL ───
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=pvf_ai_editor
+      - POSTGRES_USER=pvf
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-pvf_secret_2026}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    expose:
+      - "5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pvf -d pvf_ai_editor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:
