@@ -1,35 +1,55 @@
 import React, { useEffect, useState } from 'react';
 import { useThemeStore } from './stores/useThemeStore';
+import { useAuthStore } from './stores/useAuthStore';
 import { opencodeClient } from './services/opencodeClient';
+import { relayClient } from './services/relayClient';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { PvfEditor } from './components/PvfEditor';
 import { FileExplorer } from './components/FileExplorer';
+import { LoginPanel } from './components/LoginPanel';
 
 const App: React.FC = () => {
   const themeMode = useThemeStore((s) => s.themeMode);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [rightPanelTab, setRightPanelTab] = useState<'pvf' | 'files'>('pvf');
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     const init = async () => {
       try {
         const status = await opencodeClient.getServerStatus();
         if (!status.connected) {
           await opencodeClient.startServer();
         }
-      } catch {
-        // 非 Tauri 环境忽略
+        relayClient.connect();
+        console.log('[init] OpenCode MCP 配置: pvfutility (via Relay fallback)');
+      } catch (err) {
+        console.warn('[init] MCP 配置失败（可能已存在）:', err);
       }
     };
     init();
-  }, []);
+
+    return () => {
+      relayClient.disconnect();
+    };
+  }, [isAuthenticated]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', themeMode);
   }, [themeMode]);
+
+  // 未登录时渲染登录页（必须在所有 Hooks 之后）
+  if (!isAuthenticated) {
+    return (
+      <div className="h-screen w-screen overflow-hidden">
+        <LoginPanel />
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-screen overflow-hidden">

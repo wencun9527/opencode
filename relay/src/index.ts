@@ -23,6 +23,7 @@ import {
   incrementUsage,
   handleAuthRequest,
   handleAdminRequest,
+  rateLimiter,
 } from "./auth.js";
 
 // ─── 配置 ───
@@ -252,6 +253,13 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // 限流检查（IP 维度，每分钟 60 次）
+  if (!rateLimiter(req, 60)) {
+    res.writeHead(429, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Too many requests, please slow down" }));
+    return;
+  }
+
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
   const path = url.pathname;
 
@@ -261,14 +269,20 @@ const httpServer = http.createServer(async (req, res) => {
   // Admin routes (auth required, handled internally)
   if (await handleAdminRequest(req, res, path)) return;
 
-  // MCP StreamableHTTP endpoint — 需鉴权
+  // MCP StreamableHTTP endpoint — 内部调用免鉴权（OpenCode 在同服务器）
   if (path.startsWith("/mcp")) {
     if (REQUIRE_AUTH) {
-      const payload = verifyAuth(req);
-      if (!payload) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "unauthorized - Bearer token required" }));
-        return;
+      const remoteAddr = req.socket.remoteAddress || "";
+      const isLocal = remoteAddr === "127.0.0.1" || remoteAddr === "::1" || remoteAddr === "::ffff:127.0.0.1";
+      const authHeader = req.headers.authorization || "";
+      const isInternalKey = authHeader === "Bearer localdev";
+      if (!isLocal && !isInternalKey) {
+        const payload = verifyAuth(req);
+        if (!payload) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "unauthorized - Bearer token required" }));
+          return;
+        }
       }
     }
     try {

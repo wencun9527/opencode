@@ -1,9 +1,11 @@
 import React, { useState, useCallback } from 'react';
 import {
-  MessageSquare, Plus, Bot, Key, HardDrive, Trash2, RefreshCw, ChevronLeft, ChevronRight,
+  MessageSquare, Plus, Bot, Key, Trash2, RefreshCw, ChevronLeft, ChevronRight, LogOut,
 } from 'lucide-react';
 import { useChatStore } from '../stores/useChatStore';
+import { useAuthStore } from '../stores/useAuthStore';
 import { opencodeClient } from '../services/opencodeClient';
+import { UsagePanel } from './UsagePanel';
 import type { Session } from '../types';
 
 interface SidebarProps {
@@ -14,6 +16,8 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapse, onSettingsClick }) => {
   const { sessions, currentSessionId, createSession, switchSession, deleteSession, setServerSessionId } = useChatStore();
+  const logout = useAuthStore((s) => s.logout);
+  const user = useAuthStore((s) => s.user);
   const [hoveredSession, setHoveredSession] = useState<string | null>(null);
 
   const handleNewSession = useCallback(async () => {
@@ -118,6 +122,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapse, o
 
       {/* Bottom Buttons */}
       <div className="bb">
+        {!collapsed && <UsagePanel />}
         <button className="bbtn" onClick={handleRefreshServer}>
           <RefreshCw size={14} />
           {!collapsed && <span className="sbt">刷新会话</span>}
@@ -126,9 +131,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapse, o
           <Key size={14} />
           {!collapsed && <span className="sbt">API 配置</span>}
         </button>
-        <button className="bbtn">
-          <HardDrive size={14} />
-          {!collapsed && <span className="sbt">加载 PVF</span>}
+        <button className="bbtn" onClick={() => { opencodeClient.stopServer(); logout(); }}>
+          <LogOut size={14} />
+          {!collapsed && <span className="sbt">退出登录</span>}
         </button>
         <button className="bbtn" onClick={onToggleCollapse}>
           {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}

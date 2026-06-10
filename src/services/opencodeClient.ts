@@ -6,20 +6,16 @@ import type {
 } from '../types';
 import { useModelConfigStore } from '../stores/useModelConfigStore';
 
-/** 判断是否在 Tauri 桌面环境中运行 */
-const isTauri = '__TAURI_INTERNALS__' in window;
-
-/** OpenCode 服务器默认地址 */
+/** OpenCode 服务器默认端口 */
 const OPENCODE_DEFAULT_PORT = 4096;
 
-/** PVFut 桥接地址 */
-const PVFUT_BASE_URL = isTauri ? 'http://localhost:27000' : '/pvfut-api';
+/** PVFut 桥接地址（统一走 Vite 代理） */
+const PVFUT_BASE_URL = '/pvfut-api';
 
 /** OpenCode 认证密码（从环境变量读取） */
-const OPENCODE_PASSWORD = import.meta.env.VITE_OPENCODE_PASSWORD || '';
+const OPENCODE_PASSWORD = import.meta.env.VITE_OPENCODE_PASSWORD || 'opencode2026';
 
-/** DeepSeek API Key */
-const DEEPSEEK_API_KEY = import.meta.env.VITE_DEEPSEEK_API_KEY || '';
+/** DeepSeek API Key — 已移除，Key 仅存服务器环境变量 */
 
 // ==================== OpenCode JSON 事件类型 ====================
 
@@ -87,31 +83,23 @@ export interface FsEntry {
 /**
  * OpenCode 客户端（V2 统一架构）
  *
- * 所有 API 路径统一使用 V2 格式（/api/ 前缀），与后端 routes.ts 完全对齐：
- * - GET  /api/health
- * - GET  /api/event
- * - GET  /api/session
- * - POST /api/session/:sessionID/prompt
- * - POST /api/session/:sessionID/compact
- * - POST /api/session/:sessionID/wait
- * - GET  /api/session/:sessionID/context
- * - GET  /api/session/:sessionID/message
- * - GET  /api/session/:sessionID/permission/request
- * - POST /api/session/:sessionID/permission/request/:requestID/reply
- * - POST /api/session/:sessionID/question/request/:requestID/reply
- * - POST /api/session/:sessionID/question/request/:requestID/reject
- * - GET  /api/model
- * - GET  /api/agent
- * - GET  /api/provider
- * - GET  /api/provider/:providerID
- * - GET  /api/permission/request
- * - GET  /api/permission/saved
- * - DELETE /api/permission/saved/:id
- * - GET  /api/question/request
- * - GET  /api/fs/read
- * - GET  /api/fs/list
- * - GET  /api/command
- * - GET  /api/skill
+ * OpenCode V2 Server REST API（不带 /api/ 前缀）：
+ * - GET  /health
+ * - GET  /session               列出会话
+ * - POST /session               创建新会话
+ * - GET  /session/:id           获取会话
+ * - DELETE /session/:id         删除会话
+ * - PATCH /session/:id          更新会话
+ * - POST /session/:id/message   发送消息（同步等待）
+ * - POST /session/:id/abort     中止会话
+ * - POST /session/:id/revert    回滚
+ * - POST /session/:id/unrevert  撤销回滚
+ * - GET  /session/:id/diff      获取 diff
+ * - GET  /session/:id/message   列出消息
+ * - GET  /mcp                   MCP 状态
+ * - GET  /model                 模型列表
+ * - GET  /agent                 Agent 列表
+ * - GET  /provider              Provider 列表
  */
 export class OpenCodeClient {
   private serverPort: number | null = null;
@@ -126,58 +114,19 @@ export class OpenCodeClient {
 
   // ==================== Server 管理 ====================
 
-  /** 启动 OpenCode server（Tauri 模式） */
+  /** 连接 OpenCode server（统一走 Vite 代理或远程 URL） */
   async startServer(): Promise<ServerStatus> {
-    if (!isTauri) {
-      // 浏览器模式，通过 Vite 代理避免 CORS
-      this.serverUrl = '/opencode-api';
-      this.serverPort = OPENCODE_DEFAULT_PORT;
-      this.serverMode = true;
-      this.connectEventSource();
-      return { connected: true, port: this.serverPort, url: this.serverUrl };
-    }
-
-    try {
-      // 读取用户自定义的模型配置
-      let customApiBaseUrl = '';
-      let customApiKey = '';
-      try {
-        const config = useModelConfigStore.getState();
-        customApiBaseUrl = config.apiBaseUrl;
-        customApiKey = config.apiKey;
-      } catch { /* Store 不可用时忽略 */ }
-
-      const { invoke } = await import('@tauri-apps/api/core');
-      const result = await invoke('opencode_server_start', {
-        apiKey: customApiKey || DEEPSEEK_API_KEY,
-        opencodePassword: OPENCODE_PASSWORD,
-        customApiBaseUrl,
-        port: null,
-      }) as { port: number; url: string };
-
-      this.serverPort = result.port;
-      this.serverUrl = result.url;
-      this.serverMode = true;
-      this.connectEventSource();
-      return { connected: true, port: result.port, url: result.url };
-    } catch (err) {
-      console.warn('OpenCode server 启动失败，将使用 fallback 模式:', err);
-      this.serverMode = false;
-      return { connected: false, port: null, url: null };
-    }
+    // 浏览器模式，通过 Vite 代理避免 CORS
+    this.serverUrl = '/opencode-api';
+    this.serverPort = OPENCODE_DEFAULT_PORT;
+    this.serverMode = true;
+    this.connectEventSource();
+    return { connected: true, port: this.serverPort, url: this.serverUrl };
   }
 
   /** 停止 OpenCode server */
   async stopServer(): Promise<void> {
     this.disconnectEventSource();
-    if (isTauri && this.serverMode) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('opencode_server_stop');
-      } catch {
-        // 忽略
-      }
-    }
     this.serverPort = null;
     this.serverUrl = null;
     this.serverMode = false;
@@ -188,7 +137,7 @@ export class OpenCodeClient {
     if (this.serverUrl) {
       try {
         const authHeader = this.getAuthHeader();
-        const resp = await fetch(`${this.serverUrl}/api/health`, {
+        const resp = await fetch(`${this.serverUrl}/health`, {
           headers: { 'Authorization': authHeader },
         });
         if (resp.ok) {
@@ -198,20 +147,6 @@ export class OpenCodeClient {
         // server 不可达
       }
     }
-
-    if (isTauri) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const result = await invoke('opencode_server_status') as { port: number; url: string };
-        this.serverPort = result.port;
-        this.serverUrl = result.url;
-        this.serverMode = true;
-        return { connected: true, port: result.port, url: result.url };
-      } catch {
-        return { connected: false, port: null, url: null };
-      }
-    }
-
     return { connected: false, port: null, url: null };
   }
 
@@ -236,16 +171,28 @@ export class OpenCodeClient {
 
   // ==================== SSE 持久连接 ====================
 
-  /** 建立 SSE 持久连接 */
+  /** 建立 SSE 持久连接（支持认证 header） */
   private connectEventSource(): void {
     if (!this.serverUrl) return;
     if (this.eventSource) return; // 已连接
 
-    const es = new EventSource(
-      `${this.serverUrl}/api/event`,
-      { withCredentials: false }
-    );
+    const sseUrl = `${this.serverUrl}/event`;
+    const authHeader = this.getAuthHeader();
 
+    // 浏览器模式（走 Vite 代理，无需 auth header）或本地 server → 用原生 EventSource
+    if (!authHeader || this.serverUrl.startsWith('/')) {
+      const es = new EventSource(sseUrl, { withCredentials: false });
+      this.setupEventSourceHandlers(es);
+      this.eventSource = es;
+      return;
+    }
+
+    // 远程模式（需要认证 header）→ 用 fetch-based SSE
+    this.connectFetchSSE(sseUrl, authHeader);
+  }
+
+  /** 设置 EventSource 事件处理 */
+  private setupEventSourceHandlers(es: EventSource): void {
     es.addEventListener('message', (e: MessageEvent) => {
       if (this.cancelled) return;
       try {
@@ -262,7 +209,6 @@ export class OpenCodeClient {
     });
 
     es.addEventListener('error', () => {
-      // SSE 连接断开，尝试重连
       console.warn('[OpenCode] SSE 连接断开，3s 后重连');
       this.eventSource = null;
       setTimeout(() => {
@@ -271,8 +217,78 @@ export class OpenCodeClient {
         }
       }, 3000);
     });
+  }
 
-    this.eventSource = es;
+  /** 用 fetch 实现 SSE 连接（支持自定义 Authorization header） */
+  private async connectFetchSSE(url: string, authHeader: string): Promise<void> {
+    try {
+      const resp = await fetch(url, {
+        headers: { 'Authorization': authHeader, 'Accept': 'text/event-stream' },
+      });
+      if (!resp.ok || !resp.body) {
+        console.warn(`[OpenCode] SSE 连接失败 (${resp.status})，3s 后重连`);
+        setTimeout(() => {
+          if (this.serverUrl && this.serverMode) {
+            this.connectEventSource();
+          }
+        }, 3000);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      // 创建一个虚拟 EventSource 对象用于 close 控制
+      let aborted = false;
+      const fakeEs = { close: () => { aborted = true; reader.cancel(); } };
+      this.eventSource = fakeEs as unknown as EventSource;
+
+      while (!aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (!dataStr) continue;
+            try {
+              const data = JSON.parse(dataStr);
+              const sseEvent = this.mapOpenCodeEvent(data);
+              if (sseEvent && !this.cancelled) {
+                for (const listener of this.eventListeners) {
+                  listener(sseEvent);
+                }
+              }
+            } catch {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+
+      if (!aborted) {
+        console.warn('[OpenCode] SSE 连接断开，3s 后重连');
+        this.eventSource = null;
+        setTimeout(() => {
+          if (this.serverUrl && this.serverMode) {
+            this.connectEventSource();
+          }
+        }, 3000);
+      }
+    } catch {
+      console.warn('[OpenCode] SSE fetch 连接异常，3s 后重连');
+      this.eventSource = null;
+      setTimeout(() => {
+        if (this.serverUrl && this.serverMode) {
+          this.connectEventSource();
+        }
+      }, 3000);
+    }
   }
 
   /** 断开 SSE 持久连接 */
@@ -317,7 +333,7 @@ export class OpenCodeClient {
       if (query?.limit) params.set('limit', String(query.limit));
       if (query?.cursor) params.set('cursor', query.cursor);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/session${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/session${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -331,6 +347,41 @@ export class OpenCodeClient {
     return { data: [], cursor: {} };
   }
 
+  /** 创建新会话 — OpenCode V2：POST /session，服务端返回含 ses_ 前缀 ID 的 Session 对象 */
+  async createSession(directory?: string): Promise<string | null> {
+    if (!this.serverUrl) return null;
+    const authHeader = this.getAuthHeader();
+    try {
+      const body: Record<string, string> = {};
+      if (directory) body.directory = directory;
+      const resp = await fetch(`${this.serverUrl}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) {
+        const contentType = resp.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await resp.json();
+          const sessionId = data?.id || null;
+          if (sessionId) {
+            console.log('[OpenCode] 新 session 已创建:', sessionId);
+            return sessionId;
+          }
+        }
+      }
+      const errText = await resp.text().catch(() => '');
+      if (resp.status === 500 || resp.status === 502 || resp.status === 503) {
+        console.error('[OpenCode] 远程服务器不可达或内部错误 (' + resp.status + ')，请确认 OpenCode 服务正在运行');
+      } else {
+        console.warn('[OpenCode] 创建 session 失败:', resp.status, errText);
+      }
+    } catch (err) {
+      console.warn('[OpenCode] 创建 session 失败:', err);
+    }
+    return null;
+  }
+
   /** 压缩会话上下文 (V2: POST /api/session/:sessionID/compact) */
   async compactSession(sessionId?: string): Promise<boolean> {
     if (!this.serverUrl) return false;
@@ -339,7 +390,7 @@ export class OpenCodeClient {
 
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/session/${sid}/compact`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/compact`, {
         method: 'POST',
         headers: { 'Authorization': authHeader },
       });
@@ -355,7 +406,7 @@ export class OpenCodeClient {
 
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/session/${sid}/wait`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/wait`, {
         method: 'POST',
         headers: { 'Authorization': authHeader },
       });
@@ -371,7 +422,7 @@ export class OpenCodeClient {
 
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/session/${sid}/context`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/context`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -388,21 +439,12 @@ export class OpenCodeClient {
     const sid = sessionId || this.currentSessionId;
     if (!sid) return false;
 
-    // V2 没有 /abort 端点，使用 delivery=steer 发送空消息来中断
-    // 或直接通过 SSE 事件处理中断
+    // V2: POST /session/:id/abort
     const authHeader = this.getAuthHeader();
     try {
-      // 尝试发送一个中断性的 steer 指令
-      const resp = await fetch(`${this.serverUrl}/api/session/${sid}/prompt`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/abort`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': authHeader,
-        },
-        body: JSON.stringify({
-          prompt: { text: '/stop' },
-          delivery: 'steer',
-        }),
+        headers: { 'Authorization': authHeader },
       });
       return resp.ok;
     } catch { return false; }
@@ -421,7 +463,7 @@ export class OpenCodeClient {
       if (options?.order) params.set('order', options.order);
       if (options?.cursor) params.set('cursor', options.cursor);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/session/${sid}/message${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/message${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -435,31 +477,62 @@ export class OpenCodeClient {
     return { data: [], cursor: {} };
   }
 
-  /** 恢复会话（revert）— 通过 V1 API 删除后重建 */
-  async revertSession(_messageID?: string, _partID?: string, _sessionId?: string): Promise<{ ok: boolean; session?: unknown }> {
-    // V2 无 revert 端点。V1 也无专用 revert。
-    // 实际实现：通过重新发送历史消息来重建会话
-    // 当前保持为不可用状态
-    console.warn('[OpenCode] revertSession: V2/V1 均无 revert 端点，功能不可用');
-    return { ok: false };
-  }
-
-  /** 取消恢复（unrevert）— V2/V1 均无端点 */
-  async unrevertSession(_sessionId?: string): Promise<{ ok: boolean; session?: unknown }> {
-    console.warn('[OpenCode] unrevertSession: V2/V1 均无 unrevert 端点，功能不可用');
-    return { ok: false };
-  }
-
-  /** 获取会话 diff — 优先使用 SSE 事件缓存，fallback 使用 VCS diff */
-  async getSessionDiff(_sessionId?: string, _messageID?: string): Promise<unknown> {
-    // V2 无专用 diff 端点。
-    // 策略：优先返回通过 SSE session.diff 事件缓存的 diff 数据
-    // 如果无缓存，尝试使用 VCS diff 作为 fallback
+  /** 恢复会话（revert）— V2: POST /session/:id/revert */
+  async revertSession(messageID?: string, _partID?: string, sessionId?: string): Promise<{ ok: boolean; session?: unknown }> {
+    if (!this.serverUrl) return { ok: false };
+    const sid = sessionId || this.currentSessionId;
+    if (!sid) return { ok: false };
+    const authHeader = this.getAuthHeader();
     try {
-      const vcsDiff = await this.getVcsDiff();
-      if (vcsDiff) return vcsDiff;
+      const body: Record<string, string> = {};
+      if (messageID) body.messageID = messageID;
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        return { ok: true, session: data };
+      }
     } catch { /* ignore */ }
-    console.warn('[OpenCode] getSessionDiff: 无缓存 diff，且 VCS diff 不可用');
+    return { ok: false };
+  }
+
+  /** 取消恢复（unrevert）— V2: POST /session/:id/unrevert */
+  async unrevertSession(sessionId?: string): Promise<{ ok: boolean; session?: unknown }> {
+    if (!this.serverUrl) return { ok: false };
+    const sid = sessionId || this.currentSessionId;
+    if (!sid) return { ok: false };
+    const authHeader = this.getAuthHeader();
+    try {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/unrevert`, {
+        method: 'POST',
+        headers: { 'Authorization': authHeader },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        return { ok: true, session: data };
+      }
+    } catch { /* ignore */ }
+    return { ok: false };
+  }
+
+  /** 获取会话 diff — V2: GET /session/:id/diff */
+  async getSessionDiff(sessionId?: string, _messageID?: string): Promise<unknown> {
+    if (!this.serverUrl) return null;
+    const sid = sessionId || this.currentSessionId;
+    if (!sid) return null;
+    const authHeader = this.getAuthHeader();
+    try {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/diff`, {
+        headers: { 'Authorization': authHeader },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        return data;
+      }
+    } catch { /* ignore */ }
     return null;
   }
 
@@ -474,7 +547,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/permission/request${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/permission/request${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -493,7 +566,7 @@ export class OpenCodeClient {
 
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/session/${sid}/permission/request`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sid}/permissions`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -511,7 +584,7 @@ export class OpenCodeClient {
     try {
       const body: Record<string, unknown> = { reply };
       if (message) body.message = message;
-      const resp = await fetch(`${this.serverUrl}/api/session/${sessionId}/permission/request/${requestID}/reply`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sessionId}/permissions/${requestID}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -531,7 +604,7 @@ export class OpenCodeClient {
       const params = new URLSearchParams();
       if (projectID) params.set('projectID', projectID);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/permission/saved${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/permission/saved${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -547,7 +620,7 @@ export class OpenCodeClient {
     if (!this.serverUrl) return false;
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/permission/saved/${id}`, {
+      const resp = await fetch(`${this.serverUrl}/permission/saved/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': authHeader },
       });
@@ -566,7 +639,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/question/request${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/question/request${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -582,7 +655,7 @@ export class OpenCodeClient {
     if (!this.serverUrl) return false;
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/session/${sessionId}/question/request/${requestID}/reply`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sessionId}/question/${requestID}/reply`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -599,7 +672,7 @@ export class OpenCodeClient {
     if (!this.serverUrl) return false;
     const authHeader = this.getAuthHeader();
     try {
-      const resp = await fetch(`${this.serverUrl}/api/session/${sessionId}/question/request/${requestID}/reject`, {
+      const resp = await fetch(`${this.serverUrl}/session/${sessionId}/question/${requestID}/reject`, {
         method: 'POST',
         headers: { 'Authorization': authHeader },
       });
@@ -618,7 +691,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/model${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/model${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -642,7 +715,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/agent${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/agent${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -666,7 +739,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/provider${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/provider${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -686,7 +759,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/provider/${providerID}${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/provider/${providerID}${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -706,7 +779,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/skill${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/skill${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -726,7 +799,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/command${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/command${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -749,7 +822,7 @@ export class OpenCodeClient {
       if (query?.directory) params.set('directory', query.directory);
       if (query?.workspace) params.set('workspace', query.workspace);
       if (query?.reference) params.set('reference', query.reference);
-      const resp = await fetch(`${this.serverUrl}/api/fs/read?${params.toString()}`, {
+      const resp = await fetch(`${this.serverUrl}/fs/read?${params.toString()}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -771,7 +844,7 @@ export class OpenCodeClient {
       if (query?.workspace) params.set('workspace', query.workspace);
       if (query?.reference) params.set('reference', query.reference);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const resp = await fetch(`${this.serverUrl}/api/fs/list${qs}`, {
+      const resp = await fetch(`${this.serverUrl}/fs/list${qs}`, {
         headers: { 'Authorization': authHeader },
       });
       if (resp.ok) {
@@ -1398,16 +1471,8 @@ export class OpenCodeClient {
     this.cancelled = false;
 
     try {
-      // 优先使用 server REST API
-      if (this.serverMode && this.serverUrl) {
-        await this.sendMessageViaServer(message, onEvent, options);
-      } else if (isTauri) {
-        // Fallback：通过 Rust 启动 opencode_run 进程
-        await this.sendMessageViaRust(message, onEvent, options);
-      } else {
-        // 浏览器模式：直接 REST
-        await this.sendMessageViaServer(message, onEvent, options);
-      }
+      // 统一使用 server REST API
+      await this.sendMessageViaServer(message, onEvent, options);
 
       onEvent({ type: 'done', data: null });
       onDone?.();
@@ -1442,223 +1507,147 @@ export class OpenCodeClient {
   ): Promise<void> {
     if (!this.serverUrl) throw new Error('server 未连接');
 
-    // 1. 确保有有效的 sessionID（必须已存在于服务端，V2 API 不支持创建新 session）
+    // 1. 确保有有效的 sessionID（必须通过 POST /session 创建，服务端返回 ses_ 前缀 ID）
     let sessionId = this.currentSessionId;
     if (!sessionId) {
-      // 尝试列出已有 session 并复用
-      const sessions = await this.listSessions({ directory: options?.directory, limit: 1 });
-      if (sessions.data.length > 0) {
-        const first = sessions.data[0] as { id?: string };
-        sessionId = first.id ?? null;
-        console.log('[OpenCode] 复用已有 session:', sessionId);
+      // 始终创建新 session，不复用旧 session（旧 session 可能绑定了错误的模型）
+      console.log('[OpenCode] 创建新 session...');
+      sessionId = await this.createSession(options?.directory);
+      if (sessionId) {
+        this.currentSessionId = sessionId;
+        console.log('[OpenCode] 新 session 已创建:', sessionId);
       }
-      if (!sessionId) {
-        // 没有已有 session，无法发送消息
-        throw new Error('没有可用的会话。请先启动 OpenCode Server 并确保至少存在一个会话。');
-      }
-      this.currentSessionId = sessionId;
+    }
+    if (!sessionId) {
+      throw new Error('无法连接 OpenCode 服务器，请确认远程服务是否正在运行');
     }
 
-    // 2. 确保持久 SSE 连接已建立
-    if (!this.eventSource) {
-      this.connectEventSource();
+    // 2. 构建请求体 — V2: POST /session/:id/message
+    const messageBody: Record<string, unknown> = {
+      parts: [{ type: 'text', text: message }],
+    };
+    // 注意：API 的 model 字段格式不稳定，服务器已通过 opencode.json 配置默认模型
+    // 不在消息体中发送 model，让服务器使用配置的默认模型
+    if (options?.agent) {
+      messageBody.agent = options.agent;
     }
 
-    // 3. 注册本次消息的事件监听
-    const removeListener = this.addEventListener((event: SSEEvent) => {
-      if (this.cancelled) return;
-      onEvent(event);
-    });
+    // 3. 发送消息（同步等待 AI 回复）
+    onEvent({ type: 'step_started', data: { sessionID: sessionId } });
+    onEvent({ type: 'reasoning_started', data: {} });
 
-    try {
-      // 4. 发送 prompt (V2: POST /api/session/:sessionID/prompt)
-      const promptBody: Record<string, unknown> = {
-        prompt: { text: message },
-      };
-      if (options?.modelID) {
-        promptBody.model = { id: options.modelID, providerID: options.providerID ?? 'deepseek' };
+    const resp = await fetch(
+      `${this.serverUrl}/session/${sessionId}/message`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': this.getAuthHeader(),
+        },
+        body: JSON.stringify(messageBody),
       }
-      if (options?.agent) {
-        promptBody.agent = options.agent;
-      }
-      // delivery: steer（立即执行）| queue（排队等待）
-      if (options?.delivery) {
-        promptBody.delivery = options.delivery;
-      }
+    );
 
-      const resp = await fetch(
-        `${this.serverUrl}/api/session/${sessionId}/prompt`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(isTauri ? { 'Authorization': this.getAuthHeader() } : {}),
-          },
-          body: JSON.stringify(promptBody),
-        }
-      );
-
-      if (!resp.ok) {
-        throw new Error(`OpenCode API 错误 (${resp.status}): ${await resp.text()}`);
-      }
-
-      // 5. 等待 step.ended 或 step.failed 事件
-      await new Promise<void>((resolve) => {
-        const stepListener = (event: SSEEvent) => {
-          if (event.type === 'step_ended' || event.type === 'step_failed') {
-            this.eventListeners.delete(stepListener);
-            resolve();
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      // Session 不存在或已失效（服务器重启后旧 session 丢失），自动创建新 session 重试
+      if ((resp.status === 404 || resp.status === 500) && this.currentSessionId === sessionId) {
+        console.warn('[OpenCode] Session 可能已失效，创建新 session 重试...', resp.status, errText);
+        this.currentSessionId = null;
+        const newSessionId = await this.createSession(options?.directory);
+        if (newSessionId) {
+          this.currentSessionId = newSessionId;
+          const retryResp = await fetch(
+            `${this.serverUrl}/session/${newSessionId}/message`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': this.getAuthHeader(),
+              },
+              body: JSON.stringify(messageBody),
+            }
+          );
+          if (!retryResp.ok) {
+            const retryErrText = await retryResp.text().catch(() => '');
+            throw new Error(`OpenCode API 错误 (${retryResp.status}): ${retryErrText}`);
           }
-        };
-        this.eventListeners.add(stepListener);
-
-        // 超时保护（15 分钟）
-        setTimeout(() => {
-          this.eventListeners.delete(stepListener);
-          resolve();
-        }, 15 * 60 * 1000);
-      });
-    } finally {
-      removeListener();
+          // 用 retryResp 继续处理
+          const result = await retryResp.json();
+          return this.handleMessageResponse(result, newSessionId, onEvent);
+        }
+      }
+      throw new Error(`OpenCode API 错误 (${resp.status}): ${errText}`);
     }
+
+    // 4. 解析同步响应 — { info, parts }
+    const result = await resp.json();
+    this.handleMessageResponse(result, sessionId, onEvent);
   }
 
-  // ==================== Tauri Fallback：Rust 后端进程 ====================
-
-  private async sendMessageViaRust(
-    message: string,
+  /** 处理消息响应，提取文本和工具调用 */
+  private handleMessageResponse(
+    result: { info?: Record<string, unknown>; parts?: unknown[] },
+    sessionId: string,
     onEvent: (event: SSEEvent) => void,
-    options?: SendMessageOptions
-  ): Promise<void> {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const { listen } = await import('@tauri-apps/api/event');
+  ): void {
+    const info = result?.info as Record<string, unknown> | undefined;
+    const parts = result?.parts ?? [];
 
-    // 节流：缓冲文本事件，每 100ms 批量发送
-    let textBuffer = '';
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    const flushBuffer = () => {
-      if (textBuffer) {
-        onEvent({ type: 'message', data: { content: textBuffer } });
-        textBuffer = '';
-      }
-      flushTimer = null;
-    };
-    const bufferText = (text: string) => {
-      textBuffer += text;
-      if (!flushTimer) {
-        flushTimer = setTimeout(flushBuffer, 100);
-      }
-    };
-
-    // 节流：缓冲 reasoning 事件
-    let reasoningBuffer = '';
-    let reasoningFlushTimer: ReturnType<typeof setTimeout> | null = null;
-    const flushReasoning = () => {
-      if (reasoningBuffer) {
-        onEvent({ type: 'reasoning', data: { content: reasoningBuffer } });
-        reasoningBuffer = '';
-      }
-      reasoningFlushTimer = null;
-    };
-
-    let processDone = false;
-    const donePromise = new Promise<void>((resolve) => {
-      const checkDone = () => {
-        if (processDone) { resolve(); return; }
-        setTimeout(checkDone, 200);
-      };
-      checkDone();
-    });
-
-    const unlisten = await listen<string>('opencode-event', (event) => {
-      if (this.cancelled) return;
-
-      const trimmed = event.payload.trim();
-      if (!trimmed) return;
-
-      try {
-        const ocEvent: OpenCodeEvent = JSON.parse(trimmed);
-
-        if (ocEvent.type === 'process_exit') {
-          processDone = true;
-          if (flushTimer) { clearTimeout(flushTimer); flushBuffer(); }
-          if (reasoningFlushTimer) { clearTimeout(reasoningFlushTimer); flushReasoning(); }
-          return;
-        }
-
-        // stderr 事件
-        if (ocEvent.type === 'stderr' || ocEvent.type === 'server_stderr') {
-          const data = ocEvent.data as string | undefined;
-          if (data) {
-            console.warn('[OpenCode stderr]', data);
-          }
-          return;
-        }
-
-        // stdout 事件（server 模式的输出）
-        if (ocEvent.type === 'server_stdout') {
-          const data = ocEvent.data as string | undefined;
-          if (data) {
-            try {
-              const inner = JSON.parse(data);
-              const sseEvent = this.mapOpenCodeEvent(inner);
-              if (sseEvent) {
-                onEvent(sseEvent);
-                if (sseEvent.type === 'step_ended' || sseEvent.type === 'step_failed') {
-                  processDone = true;
-                }
-              }
-            } catch {
-              // 不是 JSON，当作普通消息
-            }
-          }
-          return;
-        }
-
-        // 对文本/推理事件用节流
-        if (ocEvent.type === 'session.next.text.delta' || ocEvent.type === 'text_delta' || ocEvent.type === 'text') {
-          const delta = (ocEvent.delta as string) || ((ocEvent.part as { text?: string })?.text) || '';
-          if (delta) bufferText(delta);
-        } else if (
-          ocEvent.type === 'session.next.reasoning.delta' ||
-          ocEvent.type === 'reasoning_delta' ||
-          ocEvent.type === 'reasoning'
-        ) {
-          const content = (ocEvent.content as string) || (ocEvent.delta as string) || '';
-          if (content) {
-            reasoningBuffer += content;
-            if (!reasoningFlushTimer) {
-              reasoningFlushTimer = setTimeout(flushReasoning, 200);
-            }
-          }
-        } else {
-          // 先刷新缓冲
-          if (flushTimer) { clearTimeout(flushTimer); flushBuffer(); }
-          if (reasoningFlushTimer) { clearTimeout(reasoningFlushTimer); flushReasoning(); }
-          const sseEvent = this.mapOpenCodeEvent(ocEvent);
-          if (sseEvent) {
-            onEvent(sseEvent);
-            if (sseEvent.type === 'step_ended' || sseEvent.type === 'step_failed') {
-              processDone = true;
-            }
-          }
-        }
-      } catch {
-        // 忽略非 JSON 行
-      }
-    });
-
-    try {
-      const apiKey = DEEPSEEK_API_KEY;
-      await invoke('opencode_run', {
-        message,
-        apiKey,
-        sessionId: this.currentSessionId || null,
-        model: options?.model || null,
+    // 更新 token 统计
+    if (info?.tokens) {
+      const total = (info.tokens.input || 0) + (info.tokens.output || 0) + (info.tokens.reasoning || 0);
+      onEvent({
+        type: 'step_ended',
+        data: {
+          sessionID: sessionId,
+          cost: info.cost,
+          tokens: info.tokens,
+          finish: info.finish,
+        },
       });
-      await donePromise;
-    } finally {
-      unlisten();
+    }
+
+    // 5. 从 parts 中提取文本和工具调用
+    for (const part of parts) {
+      if (part.type === 'text' && part.text) {
+        onEvent({
+          type: 'message',
+          data: {
+            content: part.text,
+            modelId: info?.modelID,
+          },
+        });
+      } else if (part.type === 'tool-invocation') {
+        const toolInv = part.toolInvocation;
+        if (toolInv) {
+          onEvent({
+            type: 'tool_call',
+            data: {
+              id: toolInv.toolCallId || toolInv.callID || '',
+              name: toolInv.toolName || toolInv.name || 'unknown',
+              arguments: toolInv.args || toolInv.arguments || {},
+            },
+          });
+          if (toolInv.state === 'result' || toolInv.state === 'completed') {
+            onEvent({
+              type: 'tool_result',
+              data: {
+                id: toolInv.toolCallId || toolInv.callID || '',
+                result: toolInv.result,
+                status: 'completed',
+              },
+            });
+          }
+        }
+      } else if (part.type === 'step-start') {
+        // 可嵌套的 step 信息
+      } else if (part.type === 'reasoning' && part.text) {
+        onEvent({
+          type: 'reasoning',
+          data: { content: part.text },
+        });
+      }
     }
   }
 
@@ -1669,7 +1658,8 @@ export class OpenCodeClient {
       // ---- 会话生命周期 ----
       case 'session.next.step.started': {
         const sessionId = event.sessionID as string | undefined;
-        if (sessionId && !this.currentSessionId) {
+        if (sessionId) {
+          // 始终用服务端返回的真实 sessionID 更新本地
           this.currentSessionId = sessionId;
         }
         return {
@@ -2147,8 +2137,22 @@ export class OpenCodeClient {
   // ==================== 工具方法 ====================
 
   private getAuthHeader(): string {
-    // 浏览器模式走 Vite 代理，认证在代理层注入，前端不需要发
-    if (!isTauri) return '';
+    // 走 Vite 代理时，认证在代理层注入，前端不需要发
+    if (this.serverUrl?.startsWith('/')) return '';
+
+    // 优先使用 JWT Bearer token
+    try {
+      const stored = localStorage.getItem('pvf-auth-storage');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        const accessToken = parsed?.state?.accessToken;
+        if (accessToken) {
+          return `Bearer ${accessToken}`;
+        }
+      }
+    } catch { /* 解析失败 fallback */ }
+
+    // Fallback: Basic Auth
     return 'Basic ' + btoa(`opencode:${OPENCODE_PASSWORD}`);
   }
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { PvfConnectionStatus, PvfItem, PvfEditState, PvfPackInfo, ItemInfo, LstFileEntry } from '../types';
+import type { PvfConnectionStatus, PvfItem, PvfEditState, PvfPackInfo, ItemInfo, LstFileEntry, TreeNode } from '../types';
 
 /** PVF 状态管理 */
 interface PvfState {
@@ -24,6 +24,8 @@ interface PvfState {
   selectedFiles: string[];
   /** 当前编辑字段（P9） */
   editingField: { key: string; value: string } | null;
+  /** 文件树数据（持久化避免切换 tab 重新加载） */
+  treeData: TreeNode[];
 
   // ===== 操作方法 =====
   /** 设置连接状态 */
@@ -60,6 +62,8 @@ interface PvfState {
   toggleFileSelection: (file: string) => void;
   /** 设置当前编辑字段（P9） */
   setEditingField: (field: { key: string; value: string } | null) => void;
+  /** 设置文件树数据 */
+  setTreeData: (tree: TreeNode[] | ((prev: TreeNode[]) => TreeNode[])) => void;
 }
 
 export const usePvfStore = create<PvfState>()(
@@ -82,6 +86,7 @@ export const usePvfStore = create<PvfState>()(
       stringTable: null,
       selectedFiles: [],
       editingField: null,
+      treeData: [],
 
       setConnectionStatus: (status: PvfConnectionStatus) => {
         set({ connectionStatus: status });
@@ -203,6 +208,14 @@ export const usePvfStore = create<PvfState>()(
 
       setEditingField: (field: { key: string; value: string } | null) => {
         set({ editingField: field });
+      },
+
+      setTreeData: (tree: TreeNode[] | ((prev: TreeNode[]) => TreeNode[])) => {
+        if (typeof tree === 'function') {
+          set((state) => ({ treeData: tree(state.treeData) }));
+        } else {
+          set({ treeData: tree });
+        }
       },
     }),
     {

@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS daily_usage (
   tool_calls    INTEGER NOT NULL DEFAULT 0,
   ai_tokens_in  INTEGER NOT NULL DEFAULT 0,
   ai_tokens_out INTEGER NOT NULL DEFAULT 0,
+  input_tokens  BIGINT NOT NULL DEFAULT 0,
+  output_tokens BIGINT NOT NULL DEFAULT 0,
+  reasoning_tokens BIGINT NOT NULL DEFAULT 0,
   sessions      INTEGER NOT NULL DEFAULT 0,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -89,7 +92,11 @@ SELECT
   u.email,
   u.plan,
   du.tool_calls,
-  du.ai_tokens_in + du.ai_tokens_out AS total_tokens,
+  du.input_tokens,
+  du.output_tokens,
+  du.reasoning_tokens,
+  du.ai_tokens_in + du.ai_tokens_out AS total_legacy_tokens,
+  du.input_tokens + du.output_tokens + du.reasoning_tokens AS total_tokens,
   CASE u.plan
     WHEN 'free' THEN 50
     WHEN 'pro' THEN 1000

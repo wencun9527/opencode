@@ -1,0 +1,47 @@
+# PVF AI Editor - 最小化部署（仅 Relay + PostgreSQL）
+# 适用于: 服务器资源有限，OpenCode 独立运行（systemd）
+# 使用方式: docker compose -f docker-compose.minimal.yml --env-file .env.local up -d --build
+
+services:
+  relay:
+    build:
+      context: ../relay
+      dockerfile: ../deploy/relay/Dockerfile
+    ports:
+      - "9100:9100"
+    environment:
+      - RELAY_PORT=9100
+      - TOOL_CALL_TIMEOUT=60000
+      - DATABASE_URL=postgresql://pvf:${DB_PASSWORD:-pvf_secret_2026}@postgres:5432/pvf_ai_editor
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=pvf_ai_editor
+      - POSTGRES_USER=pvf
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-pvf_secret_2026}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pvf -d pvf_ai_editor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:

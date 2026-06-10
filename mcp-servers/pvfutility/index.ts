@@ -3,6 +3,10 @@
  * pvfUtility WebApi MCP Server (TypeScript)
  * 为pvfUtility软件提供MCP (Model Context Protocol) 接口封装
  * 使用 Bun 运行，无需 Python 依赖
+ *
+ * 支持两种模式：
+ * 1. 直接模式：调用本地 PVFut API (localhost:27000)
+ * 2. Relay 代理模式：通过 Relay MCP 转发到远程客户端 (设置 RELAY_MCP_URL 环境变量)
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -13,6 +17,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const BASE_URL = process.env.PVFUT_BASE_URL || "http://localhost:27000";
+const RELAY_MCP_URL = process.env.RELAY_MCP_URL || ""; // 如 http://localhost:9100/mcp
 
 // ═══ 工具定义 ═══
 
@@ -284,7 +289,108 @@ async function apiPostText(endpoint: string, params: Record<string, unknown>, te
   return resp.json();
 }
 
-// ═══ 工具调用处理 ═══
+// ═══ Relay MCP 代理 ═══
+
+let relaySessionId: string | null = null;
+
+async function callViaRelay(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  if (!RELAY_MCP_URL) {
+    throw new Error("PVFut 不可用且未配置 RELAY_MCP_URL");
+  }
+
+  // MCP StreamableHTTP 协议：初始化 + 调用工具
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+  };
+
+  // 如果没有 session，先初始化
+  if (!relaySessionId) {
+    const initResp = await fetch(RELAY_MCP_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "pvfutility-mcp-proxy", version: "1.0.0" },
+        },
+      }),
+    });
+
+    if (!initResp.ok) throw new Error(`Relay 初始化失败: HTTP ${initResp.status}`);
+
+    // 从响应头获取 session ID
+    relaySessionId = initResp.headers.get("mcp-session-id");
+
+    // 发送 initialized 通知
+    if (relaySessionId) {
+      headers["Mcp-Session-Id"] = relaySessionId;
+    }
+
+    await fetch(RELAY_MCP_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      }),
+    });
+  }
+
+  // 调用工具
+  const callHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+  };
+  if (relaySessionId) {
+    callHeaders["Mcp-Session-Id"] = relaySessionId;
+  }
+
+  const callResp = await fetch(RELAY_MCP_URL, {
+    method: "POST",
+    headers: callHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: toolName, arguments: args },
+    }),
+  });
+
+  if (!callResp.ok) throw new Error(`Relay 工具调用失败: HTTP ${callResp.status}`);
+
+  // 更新 session ID（可能变化）
+  const newSessionId = callResp.headers.get("mcp-session-id");
+  if (newSessionId) relaySessionId = newSessionId;
+
+  const data = await callResp.json();
+
+  // 解析 MCP 响应
+  if (data.result?.content) {
+    const textContent = data.result.content.find((c: { type: string }) => c.type === "text");
+    if (textContent?.text) {
+      try {
+        return JSON.parse(textContent.text);
+      } catch {
+        return textContent.text;
+      }
+    }
+  }
+
+  if (data.error) {
+    throw new Error(`Relay 错误: ${data.error.message || JSON.stringify(data.error)}`);
+  }
+
+  return data.result || data;
+}
+
+// ═══ 工具调用处理（支持 Relay fallback） ═══
+
+let pvfutAvailable: boolean | null = null;
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
@@ -381,7 +487,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 
     case "save_as_pvf":
       return apiGet("/Api/PvfUtiltiy/SaveAsPvfFile", {
-        filePath: encodeURIComponent(args.file_path as string ?? ""),
+        filePath: args.file_path as string ?? "",
       });
 
     case "get_pvf_pack_file_path":
@@ -417,11 +523,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
+    // 如果已知 PVFut 不可用，直接走 Relay
+    if (pvfutAvailable === false && RELAY_MCP_URL) {
+      const result = await callViaRelay(request.params.name, request.params.arguments ?? {});
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+
+    // 尝试本地 PVFut
     const result = await callTool(request.params.name, request.params.arguments ?? {});
+    pvfutAvailable = true;
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
   } catch (e: any) {
+    // PVFut 调用失败，尝试 Relay fallback
+    if (RELAY_MCP_URL && pvfutAvailable !== true) {
+      pvfutAvailable = false;
+      try {
+        const result = await callViaRelay(request.params.name, request.params.arguments ?? {});
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (relayErr: any) {
+        return {
+          content: [{ type: "text", text: `PVFut 错误: ${e.message}\nRelay 错误: ${relayErr.message}` }],
+          isError: true,
+        };
+      }
+    }
     return {
       content: [{ type: "text", text: `错误: ${e.message}` }],
       isError: true,
@@ -433,6 +564,10 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("pvfutility-mcp server running on stdio");
+  console.error(`PVFut base URL: ${BASE_URL}`);
+  if (RELAY_MCP_URL) {
+    console.error(`Relay MCP fallback: ${RELAY_MCP_URL}`);
+  }
 }
 
 main().catch(console.error);

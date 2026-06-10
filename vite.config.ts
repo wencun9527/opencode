@@ -7,9 +7,9 @@ export default defineConfig(async ({ mode }) => {
   // 加载 .env 文件中的环境变量
   const env = loadEnv(mode, process.cwd(), '');
 
-  const DEEPSEEK_API_KEY = env.VITE_DEEPSEEK_API_KEY || '';
-  const OPENCODE_PASSWORD = env.VITE_OPENCODE_PASSWORD || '';
+  const OPENCODE_PASSWORD = env.VITE_OPENCODE_PASSWORD || 'opencode2026';
   const OPENCODE_AUTH = 'Basic ' + Buffer.from(`opencode:${OPENCODE_PASSWORD}`).toString('base64');
+  const OPENCODE_REMOTE_URL = env.VITE_OPENCODE_REMOTE_URL || 'http://1.12.207.131:4096';
 
   return {
     plugins: [tailwindcss(), react()],
@@ -29,34 +29,42 @@ export default defineConfig(async ({ mode }) => {
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/pvfut-api/, ''),
         },
-        // OpenCode Server API 代理（浏览器模式走代理，避免 CORS + 注入认证）
+        // OpenCode Server API 代理（指向远程云端服务器）
         '/opencode-api': {
-          target: 'http://127.0.0.1:4096',
+          target: OPENCODE_REMOTE_URL,
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/opencode-api/, ''),
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            // 移除前端可能发来的 Authorization，统一由代理层注入
-            proxyReq.removeHeader('Authorization');
-            // 在代理层注入 Authorization header，浏览器不再弹出认证框
-            proxyReq.setHeader('Authorization', OPENCODE_AUTH);
-          });
-        },
-        },
-        // DeepSeek API 代理（Key 在服务端注入，前端不暴露）
-        '/deepseek-api': {
-          target: 'https://api.deepseek.com',
-          changeOrigin: true,
-          secure: true,
-          rewrite: (path) => path.replace(/^\/deepseek-api/, ''),
+          headers: {
+            Authorization: OPENCODE_AUTH,
+          },
           configure: (proxy) => {
-            proxy.on('proxyReq', (proxyReq) => {
-              // 在服务端注入 Authorization header
-              proxyReq.setHeader('Authorization', `Bearer ${DEEPSEEK_API_KEY}`);
-              // 移除前端可能传来的 Authorization header
-              proxyReq.removeHeader('x-forwarded-authorization');
+            proxy.on('proxyReq', (proxyReq, req) => {
+              console.log('[Proxy]', req.method, req.url, '→', proxyReq.path, 'Auth:', proxyReq.getHeader('Authorization') ? 'YES' : 'NO');
+              if (!proxyReq.getHeader('Authorization')) {
+                proxyReq.setHeader('Authorization', OPENCODE_AUTH);
+              }
+            });
+            proxy.on('error', (err, _req, res) => {
+              console.error('[Proxy Error]', err.message);
+              if (!res.headersSent) {
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+              }
+              res.end('Proxy Error: ' + err.message);
             });
           },
+        },
+        // Relay 认证/管理 API 代理
+        '/auth': {
+          target: env.VITE_RELAY_URL || 'http://1.12.207.131:9100',
+          changeOrigin: true,
+        },
+        '/admin': {
+          target: env.VITE_RELAY_URL || 'http://1.12.207.131:9100',
+          changeOrigin: true,
+        },
+        '/health': {
+          target: env.VITE_RELAY_URL || 'http://1.12.207.131:9100',
+          changeOrigin: true,
         },
       },
     },

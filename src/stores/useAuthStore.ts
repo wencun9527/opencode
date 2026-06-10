@@ -52,7 +52,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       accessToken: null,
       refreshToken: null,
-      serverUrl: localStorage.getItem('cloud_server_url') || 'http://localhost:80',
+      serverUrl: localStorage.getItem('cloud_server_url') || import.meta.env.VITE_RELAY_URL || 'http://1.12.207.131:9100',
       isLoading: false,
       error: null,
 

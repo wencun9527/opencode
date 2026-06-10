@@ -106,6 +106,22 @@ export interface PvfItem {
   icon?: string;
 }
 
+/** PVF 树节点 */
+export interface TreeNode {
+  /** 节点名称 */
+  name: string;
+  /** 完整路径 */
+  path: string;
+  /** 是否为目录 */
+  isDirectory: boolean;
+  /** 子节点（目录才有） */
+  children: TreeNode[];
+  /** 子节点是否已加载（懒加载） */
+  loaded: boolean;
+  /** 是否展开 */
+  expanded: boolean;
+}
+
 /** PVF 编辑状态 */
 export interface PvfEditState {
   /** 当前打开的文件路径 */

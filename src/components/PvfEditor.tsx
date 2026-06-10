@@ -3,11 +3,11 @@ import {
   Save, RefreshCw, Pencil, File, Link, Search, Download, Trash2,
   Table as TableIcon, Bug, FileText, Copy, ShoppingBag, Database,
   Check, X, Columns, ChevronLeft, ChevronRight, Loader2, XCircle,
-  AlertCircle, CheckCircle, FolderOpen, Wrench,
+  AlertCircle, CheckCircle, FolderOpen, Folder, ChevronDown, Wrench,
 } from 'lucide-react';
 import { usePvfStore } from '../stores/usePvfStore';
 import { pvfBridge } from '../services/pvfBridge';
-import type { PvfItem, ItemInfo, LstFileEntry } from '../types';
+import type { PvfItem, ItemInfo, LstFileEntry, TreeNode } from '../types';
 
 // ===== Tab 定义 =====
 type RightTab = 'files' | 'editor' | 'tools';
@@ -76,14 +76,11 @@ const PAGE_SIZE = 100;
 export const PvfEditor: React.FC = () => {
   const {
     connectionStatus, editState, packInfo, lstFiles, selectedFiles, editingField,
-    setConnectionStatus, openFile, updateFieldValue, markDirty, saveFile, setError,
-    setPackInfo, setLstFiles, setSelectedFiles, toggleFileSelection, setEditingField,
+    treeData, setConnectionStatus, openFile, updateFieldValue, markDirty, saveFile, setError,
+    setPackInfo, setLstFiles, setSelectedFiles, toggleFileSelection, setEditingField, setTreeData,
   } = usePvfStore();
 
   const [rightTab, setRightTab] = useState<RightTab>('files');
-  const [rootDirs, setRootDirs] = useState<string[]>([]);
-  const [currentDir, setCurrentDir] = useState<string>('');
-  const [dirFiles, setDirFiles] = useState<PvfItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searchResults, setSearchResults] = useState<PvfItem[] | null>(null);
@@ -109,39 +106,112 @@ export const PvfEditor: React.FC = () => {
       if (status === 'connected') {
         const dirs = await pvfBridge.getPvfRootDirectory();
         const dirList = Array.isArray(dirs) ? (dirs as string[]) : [];
-        setRootDirs(dirList);
+        // 根目录直接作为顶层树节点，path 统一以 / 结尾
+        const roots: TreeNode[] = dirList.map(d => ({
+          name: d.replace(/\/$/, ''),
+          path: d.endsWith('/') ? d : d + '/',
+          isDirectory: true,
+          children: [],
+          loaded: false,
+          expanded: false,
+        }));
+        setTreeData(roots);
         const packPath = await pvfBridge.getPvfPackFilePath();
         const version = await pvfBridge.getVersion();
         setPackInfo({ filePath: packPath, version });
-        if (dirList.length > 0 && !currentDir) await loadDirectory(dirList[0]);
       }
     } catch (err) { setConnectionStatus('error'); setError(`连接失败: ${err instanceof Error ? err.message : String(err)}`); }
     finally { setLoading(false); }
   }, []);
 
-  const loadDirectory = async (dir: string) => {
-    setLoading(true); setCurrentDir(dir); setSearchResults(null); setCurrentPage(1);
-    try {
-      const fileListData = await pvfBridge.getFileList(dir, '', 0);
-      const items: PvfItem[] = [];
-      if (Array.isArray(fileListData)) {
-        for (const file of fileListData) {
-          const filePath = typeof file === 'string' ? file : (file as Record<string, unknown>).FileName as string;
-          if (!filePath) continue;
-          const fileName = filePath.includes('/') ? filePath.split('/').pop()! : filePath;
-          items.push({ path: filePath.includes('/') ? filePath : `${dir}${filePath}`, name: fileName, isDirectory: false, size: 0 });
+  /** 加载指定目录的内容并构建子树节点 */
+  const loadTreeNode = async (dirPath: string): Promise<TreeNode[]> => {
+    // 确保 dirPath 以 / 结尾，避免切片后首元素为空
+    const normalizedDir = dirPath.endsWith('/') ? dirPath : dirPath + '/';
+    const fileListData = await pvfBridge.getFileList(dirPath, '', 0);
+    const nodes: TreeNode[] = [];
+    if (!Array.isArray(fileListData)) return nodes;
+
+    const subDirs = new Map<string, true>(); // 收集子目录
+    const fileNodes: TreeNode[] = [];
+
+    for (const file of fileListData) {
+      const filePath = typeof file === 'string' ? file : (file as Record<string, unknown>).FileName as string;
+      if (!filePath) continue;
+
+      // 去掉前缀，得到相对路径
+      let relPath = filePath.startsWith(normalizedDir) ? filePath.slice(normalizedDir.length)
+        : filePath.startsWith(dirPath) ? filePath.slice(dirPath.length)
+        : filePath;
+      // 去掉开头的 /
+      if (relPath.startsWith('/')) relPath = relPath.slice(1);
+
+      if (relPath.includes('/')) {
+        // 路径含 /，说明有子目录，提取第一级子目录名
+        const subDirName = relPath.split('/')[0];
+        if (subDirName && !subDirs.has(subDirName)) {
+          subDirs.set(subDirName, true);
+          nodes.push({
+            name: subDirName,
+            path: normalizedDir + subDirName + '/',
+            isDirectory: true,
+            children: [],
+            loaded: false,
+            expanded: false,
+          });
         }
+      } else {
+        // 直接文件
+        fileNodes.push({
+          name: relPath,
+          path: filePath,
+          isDirectory: false,
+          children: [],
+          loaded: true,
+          expanded: false,
+        });
       }
-      setDirFiles(items);
-    } catch (err) { msg.error(`加载目录失败: ${err instanceof Error ? err.message : String(err)}`); }
-    finally { setLoading(false); }
+    }
+
+    // 目录排在前面，文件排在后面
+    return [...nodes, ...fileNodes];
   };
+
+  /** 展开/折叠树节点 */
+  const toggleTreeNode = async (path: string) => {
+    const update = (nodes: TreeNode[]): TreeNode[] =>
+      nodes.map(node => {
+        if (node.path === path) {
+          if (!node.loaded) {
+            // 懒加载：异步获取子节点后更新
+            loadTreeNode(path).then(children => {
+              setTreeData(prev => setNodeChildren(prev, path, children, true));
+            });
+            return { ...node, expanded: true };
+          }
+          return { ...node, expanded: !node.expanded };
+        }
+        if (node.children.length > 0) {
+          return { ...node, children: update(node.children) };
+        }
+        return node;
+      });
+    setTreeData(prev => update(prev));
+  };
+
+  /** 更新指定路径节点的 children */
+  const setNodeChildren = (nodes: TreeNode[], path: string, children: TreeNode[], expanded: boolean): TreeNode[] =>
+    nodes.map(node => {
+      if (node.path === path) return { ...node, children, loaded: true, expanded };
+      if (node.children.length > 0) return { ...node, children: setNodeChildren(node.children, path, children, expanded) };
+      return node;
+    });
 
   const handleSearch = async () => {
     if (!searchKeyword.trim()) { setSearchResults(null); return; }
     setLoading(true);
     try {
-      const results = await pvfBridge.searchPvf(searchKeyword, currentDir, 1, false);
+      const results = await pvfBridge.searchPvf(searchKeyword, '', 1, false);
       const items: PvfItem[] = [];
       if (Array.isArray(results)) {
         for (const r of results.slice(0, 200)) {
@@ -157,7 +227,7 @@ export const PvfEditor: React.FC = () => {
   };
 
   const handleOpenFile = async (record: PvfItem) => {
-    if (record.isDirectory) { await loadDirectory(record.path); return; }
+    if (record.isDirectory) return; // 目录由 TreeNodeView 的 toggleTreeNode 处理
     setLoading(true);
     try {
       const content = await pvfBridge.getFileContent(record.path, encoding, false);
@@ -188,7 +258,7 @@ export const PvfEditor: React.FC = () => {
 
   const handleDelete = async (record: PvfItem) => {
     if (!confirm(`确定删除 ${record.name}？`)) return;
-    try { await pvfBridge.deleteFile(record.path); msg.success('已删除'); await loadDirectory(currentDir); }
+    try { await pvfBridge.deleteFile(record.path); msg.success('已删除'); refreshFileList(); }
     catch (err) { msg.error(`删除失败: ${err instanceof Error ? err.message : String(err)}`); }
   };
 
@@ -225,7 +295,7 @@ export const PvfEditor: React.FC = () => {
   const handleBatchDelete = async () => {
     if (selectedFiles.length === 0) return;
     if (!confirm(`确定删除 ${selectedFiles.length} 个文件？`)) return;
-    try { await pvfBridge.deleteFilesBatch(selectedFiles); msg.success(`已删除 ${selectedFiles.length} 个文件`); setSelectedFiles([]); await loadDirectory(currentDir); }
+    try { await pvfBridge.deleteFilesBatch(selectedFiles); msg.success(`已删除 ${selectedFiles.length} 个文件`); setSelectedFiles([]); refreshFileList(); }
     catch (err) { msg.error(`批量删除失败: ${err instanceof Error ? err.message : String(err)}`); }
   };
 
@@ -242,9 +312,9 @@ export const PvfEditor: React.FC = () => {
 
   const handleCopyPath = (path: string) => { navigator.clipboard.writeText(path); msg.success('已复制路径'); };
 
-  useEffect(() => { refreshFileList(); }, []);
+  useEffect(() => { if (usePvfStore.getState().treeData.length === 0) refreshFileList(); }, []);
 
-  const displayFiles = searchResults ?? dirFiles;
+  const displayFiles = searchResults ?? [];
   const totalPages = Math.max(1, Math.ceil(displayFiles.length / PAGE_SIZE));
   const pagedFiles = displayFiles.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
@@ -277,8 +347,8 @@ export const PvfEditor: React.FC = () => {
       <div className="rp-con">
         {rightTab === 'files' && (
           <FilesTab
-            connectionStatus={connectionStatus} rootDirs={rootDirs} currentDir={currentDir}
-            loadDirectory={loadDirectory} searchResults={searchResults} setSearchResults={setSearchResults}
+            connectionStatus={connectionStatus} treeData={treeData}
+            toggleTreeNode={toggleTreeNode} searchResults={searchResults} setSearchResults={setSearchResults}
             setSearchKeyword={setSearchKeyword} pagedFiles={pagedFiles} loading={loading}
             batchMode={batchMode} selectedFiles={selectedFiles} currentPage={currentPage}
             totalPages={totalPages} setCurrentPage={setCurrentPage} handleOpenFile={handleOpenFile}
@@ -413,12 +483,113 @@ export const PvfEditor: React.FC = () => {
 };
 
 // ══════════════════════════════════════════════════════════════════
+// Tree Node View (递归组件)
+// ══════════════════════════════════════════════════════════════════
+
+interface TreeNodeViewProps {
+  node: TreeNode;
+  depth: number;
+  toggleTreeNode: (path: string) => void;
+  handleOpenFile: (record: PvfItem) => Promise<void>;
+  handleDelete: (record: PvfItem) => Promise<void>;
+  handleViewItemInfo: (filePath: string) => Promise<void>;
+  handleCopyPath: (path: string) => void;
+  batchMode: boolean;
+  selectedFiles: string[];
+  toggleFileSelection: (path: string) => void;
+}
+
+const TreeNodeView: React.FC<TreeNodeViewProps> = ({
+  node, depth, toggleTreeNode, handleOpenFile, handleDelete,
+  handleViewItemInfo, handleCopyPath, batchMode, selectedFiles, toggleFileSelection,
+}) => {
+  const isDir = node.isDirectory;
+
+  const handleClick = () => {
+    if (isDir) {
+      toggleTreeNode(node.path);
+    } else {
+      handleOpenFile({ path: node.path, name: node.name, isDirectory: false, size: 0 });
+    }
+  };
+
+  return (
+    <div>
+      <div
+        className="rp-it"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          paddingLeft: depth * 16 + 6,
+          cursor: 'pointer',
+        }}
+        onClick={handleClick}
+      >
+        {batchMode && !isDir && (
+          <input type="checkbox" checked={selectedFiles.includes(node.path)} onChange={() => toggleFileSelection(node.path)} onClick={e => e.stopPropagation()} style={{ flexShrink: 0 }} />
+        )}
+        {/* 展开/折叠箭头 */}
+        <div style={{ width: 14, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {isDir ? (
+            node.expanded ? <ChevronDown size={11} style={{ color: 'rgb(var(--t3))' }} /> : <ChevronRight size={11} style={{ color: 'rgb(var(--t3))' }} />
+          ) : null}
+        </div>
+        {/* 图标 */}
+        <div style={{ width: 22, height: 22, borderRadius: 4, background: isDir ? 'rgb(var(--amber) / .1)' : 'rgb(var(--blue) / .1)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          {isDir ? (
+            node.expanded ? <FolderOpen size={11} style={{ color: 'rgb(var(--amber))' }} /> : <Folder size={11} style={{ color: 'rgb(var(--amber))' }} />
+          ) : (
+            <File size={11} style={{ color: 'rgb(var(--blue))' }} />
+          )}
+        </div>
+        {/* 名称 */}
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <p style={{ fontSize: 13, color: 'rgb(var(--t1))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isDir ? 500 : 400 }}>
+            {node.name}
+          </p>
+        </div>
+        {/* 操作按钮（仅文件） */}
+        {!isDir && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+            <button className="sbtn" title="编辑" onClick={() => handleOpenFile({ path: node.path, name: node.name, isDirectory: false, size: 0 })}><Pencil size={12} /></button>
+            <button className="sbtn" title="物品信息" onClick={() => handleViewItemInfo(node.path)}><ShoppingBag size={12} /></button>
+            <button className="sbtn" title="复制路径" onClick={() => handleCopyPath(node.path)}><Copy size={12} /></button>
+            {!batchMode && <button className="sbtn" title="删除" onClick={() => handleDelete({ path: node.path, name: node.name, isDirectory: false, size: 0 })} style={{ color: 'rgb(var(--rose))' }}><Trash2 size={12} /></button>}
+          </div>
+        )}
+      </div>
+      {/* 递归渲染子节点 */}
+      {isDir && node.expanded && (
+        node.loaded && node.children.length === 0 ? (
+          <div style={{ paddingLeft: (depth + 1) * 16 + 6, padding: '6px 0', fontSize: 11, color: 'rgb(var(--t3))' }}>空目录</div>
+        ) : (
+          node.children.map(child => (
+            <TreeNodeView
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              toggleTreeNode={toggleTreeNode}
+              handleOpenFile={handleOpenFile}
+              handleDelete={handleDelete}
+              handleViewItemInfo={handleViewItemInfo}
+              handleCopyPath={handleCopyPath}
+              batchMode={batchMode}
+              selectedFiles={selectedFiles}
+              toggleFileSelection={toggleFileSelection}
+            />
+          ))
+        )
+      )}
+    </div>
+  );
+};
+
+// ══════════════════════════════════════════════════════════════════
 // Files Tab
 // ══════════════════════════════════════════════════════════════════
 
 interface FilesTabProps {
-  connectionStatus: string; rootDirs: string[]; currentDir: string;
-  loadDirectory: (dir: string) => Promise<void>; searchResults: PvfItem[] | null;
+  connectionStatus: string; treeData: TreeNode[];
+  toggleTreeNode: (path: string) => void; searchResults: PvfItem[] | null;
   setSearchResults: (v: PvfItem[] | null) => void; setSearchKeyword: (v: string) => void;
   pagedFiles: PvfItem[]; loading: boolean; batchMode: boolean; selectedFiles: string[];
   currentPage: number; totalPages: number;
@@ -432,7 +603,7 @@ interface FilesTabProps {
 }
 
 const FilesTab: React.FC<FilesTabProps> = ({
-  connectionStatus, rootDirs, currentDir, loadDirectory,
+  connectionStatus, treeData, toggleTreeNode,
   searchResults, setSearchResults, setSearchKeyword,
   pagedFiles, loading, batchMode, selectedFiles,
   currentPage, totalPages, setCurrentPage,
@@ -451,59 +622,74 @@ const FilesTab: React.FC<FilesTabProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Dir pills */}
-      <div style={{ padding: '4px 10px 8px', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-        {rootDirs.map(dir => (
-          <span key={dir} onClick={() => loadDirectory(dir)} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 500, cursor: 'pointer', background: dir === currentDir ? 'rgb(var(--blue) / .1)' : 'rgb(var(--b3))', color: dir === currentDir ? 'rgb(var(--blue))' : 'rgb(var(--t2))', border: `1px solid ${dir === currentDir ? 'rgb(var(--blue) / .3)' : 'transparent'}` }}>{dir}</span>
-        ))}
-        {searchResults !== null && (
-          <button style={{ fontSize: 11, color: 'rgb(var(--rose))', background: 0, border: 0, cursor: 'pointer', marginLeft: 4 }} onClick={() => { setSearchResults(null); setSearchKeyword(''); }}>清除搜索</button>
-        )}
-      </div>
-
       {/* Encoding */}
-      <div style={{ padding: '0 10px 8px' }}>
-        <select className="fi" value={encoding} onChange={(e) => setEncoding(e.target.value)} style={{ fontSize: 11, padding: '5px 8px' }}>
+      <div style={{ padding: '4px 10px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <select className="fi" value={encoding} onChange={(e) => setEncoding(e.target.value)} style={{ fontSize: 11, padding: '4px 8px' }}>
           <option value="UTF8">UTF8</option><option value="CN">CN</option><option value="TW">TW</option><option value="KR">KR</option><option value="JP">JP</option>
         </select>
+        {searchResults !== null && (
+          <button style={{ fontSize: 11, color: 'rgb(var(--rose))', background: 0, border: 0, cursor: 'pointer' }} onClick={() => { setSearchResults(null); setSearchKeyword(''); }}>清除搜索</button>
+        )}
       </div>
 
       {/* Batch bar */}
       {batchMode && selectedFiles.length > 0 && (
-        <div style={{ padding: '0 10px 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ padding: '0 10px 6px', display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 11, color: 'rgb(var(--t3))' }}>已选 {selectedFiles.length} 个文件</span>
           <button style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 8px', borderRadius: 5, fontSize: 10, fontWeight: 500, background: 'rgb(var(--rose) / .1)', color: 'rgb(var(--rose))', border: '1px solid rgb(var(--rose) / .3)', cursor: 'pointer' }} onClick={handleBatchDelete}><Trash2 size={11} /> 删除选中</button>
         </div>
       )}
 
-      {/* File list */}
-      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0 6px' }}>
+      {/* Tree or Search results */}
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0 2px' }}>
         {loading ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 0' }}><Loader2 size={24} className="anim-spin" style={{ color: 'rgb(var(--blue))' }} /></div>
-        ) : pagedFiles.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '40px 20px', color: 'rgb(var(--t3))' }}><FolderOpen size={28} style={{ marginBottom: 12 }} /><p style={{ fontSize: 13 }}>无文件</p></div>
-        ) : pagedFiles.map((record) => (
-          <div key={record.path} className="rp-it" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {batchMode && <input type="checkbox" checked={selectedFiles.includes(record.path)} onChange={() => toggleFileSelection(record.path)} style={{ flexShrink: 0 }} />}
-            <div style={{ width: 24, height: 24, borderRadius: 5, background: 'rgb(var(--blue) / .1)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <File size={11} style={{ color: 'rgb(var(--blue))' }} />
+        ) : searchResults !== null ? (
+          /* 搜索结果：平铺展示 */
+          pagedFiles.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'rgb(var(--t3))' }}><Search size={28} style={{ marginBottom: 12 }} /><p style={{ fontSize: 13 }}>无搜索结果</p></div>
+          ) : pagedFiles.map((record) => (
+            <div key={record.path} className="rp-it" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {batchMode && <input type="checkbox" checked={selectedFiles.includes(record.path)} onChange={() => toggleFileSelection(record.path)} style={{ flexShrink: 0 }} />}
+              <div style={{ width: 24, height: 24, borderRadius: 5, background: 'rgb(var(--blue) / .1)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <File size={11} style={{ color: 'rgb(var(--blue))' }} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }} onClick={() => handleOpenFile(record)}>
+                <p style={{ fontSize: 13, color: 'rgb(var(--t1))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.name}</p>
+                <p style={{ fontSize: 11, color: 'rgb(var(--t3))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.path}</p>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                <button className="sbtn" title="编辑" onClick={() => handleOpenFile(record)}><Pencil size={12} /></button>
+                <button className="sbtn" title="物品信息" onClick={() => handleViewItemInfo(record.path)}><ShoppingBag size={12} /></button>
+                <button className="sbtn" title="复制路径" onClick={() => handleCopyPath(record.path)}><Copy size={12} /></button>
+                {!batchMode && <button className="sbtn" title="删除" onClick={() => handleDelete(record)} style={{ color: 'rgb(var(--rose))' }}><Trash2 size={12} /></button>}
+              </div>
             </div>
-            <div style={{ minWidth: 0, flex: 1 }} onClick={() => handleOpenFile(record)}>
-              <p style={{ fontSize: 13, color: 'rgb(var(--t1))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.name}</p>
-              <p style={{ fontSize: 11, color: 'rgb(var(--t3))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.path}</p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-              <button className="sbtn" title="编辑" onClick={() => handleOpenFile(record)}><Pencil size={12} /></button>
-              <button className="sbtn" title="物品信息" onClick={() => handleViewItemInfo(record.path)}><ShoppingBag size={12} /></button>
-              <button className="sbtn" title="复制路径" onClick={() => handleCopyPath(record.path)}><Copy size={12} /></button>
-              {!batchMode && <button className="sbtn" title="删除" onClick={() => handleDelete(record)} style={{ color: 'rgb(var(--rose))' }}><Trash2 size={12} /></button>}
-            </div>
-          </div>
-        ))}
+          ))
+        ) : (
+          /* 树形展示 */
+          treeData.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'rgb(var(--t3))' }}><FolderOpen size={28} style={{ marginBottom: 12 }} /><p style={{ fontSize: 13 }}>无文件</p></div>
+          ) : treeData.map(node => (
+            <TreeNodeView
+              key={node.path}
+              node={node}
+              depth={0}
+              toggleTreeNode={toggleTreeNode}
+              handleOpenFile={handleOpenFile}
+              handleDelete={handleDelete}
+              handleViewItemInfo={handleViewItemInfo}
+              handleCopyPath={handleCopyPath}
+              batchMode={batchMode}
+              selectedFiles={selectedFiles}
+              toggleFileSelection={toggleFileSelection}
+            />
+          ))
+        )}
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
+      {/* Pagination (搜索模式) */}
+      {searchResults !== null && totalPages > 1 && (
         <div style={{ padding: '8px 10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
           <button className="sbtn" disabled={currentPage <= 1} onClick={() => setCurrentPage(1)}><ChevronLeft size={12} style={{ transform: 'rotate(90deg)' }} /></button>
           <button className="sbtn" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))}><ChevronLeft size={12} /></button>

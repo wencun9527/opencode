@@ -13,6 +13,7 @@ import { useThemeStore } from '../stores/useThemeStore';
 import { usePvfStore } from '../stores/usePvfStore';
 import { useModelConfigStore } from '../stores/useModelConfigStore';
 import { opencodeClient } from '../services/opencodeClient';
+import { relayClient } from '../services/relayClient';
 import { ToolCallCard } from './ToolCallCard';
 import { ModelSelector } from './ModelSelector';
 import { QuestionDialog } from './QuestionDialog';
@@ -79,6 +80,12 @@ function AgentStateBar({ rightOpen, onToggleRight }: AgentStateBarProps) {
   const currentSession = sessions.find((s) => s.id === currentSessionId);
   const stateInfo = STATE_MAP[agent.status] || STATE_MAP.idle;
 
+  // Relay 连接状态
+  const [relayConnected, setRelayConnected] = useState(relayClient.isConnected());
+  useEffect(() => {
+    return relayClient.onStatusChange((connected) => setRelayConnected(connected));
+  }, []);
+
   const tokenUsed = agent.tokenUsed ?? 0;
   const tokenTotal = agent.tokenTotal ?? 128000;
   const tokenPct = Math.min(100, (tokenUsed / tokenTotal) * 100);
@@ -141,6 +148,12 @@ function AgentStateBar({ rightOpen, onToggleRight }: AgentStateBarProps) {
       <div className="badge" style={{ background: connectionStatus === 'connected' ? 'rgb(var(--green) / .1)' : 'rgb(var(--rose) / .1)', color: connectionStatus === 'connected' ? 'rgb(var(--green))' : 'rgb(var(--rose))' }}>
         {connectionStatus === 'connected' ? <Wifi size={10} /> : <WifiOff size={10} />}
         PVF
+      </div>
+
+      {/* Relay Badge */}
+      <div className="badge" style={{ background: relayConnected ? 'rgb(var(--purple) / .1)' : 'rgb(var(--amber) / .1)', color: relayConnected ? 'rgb(var(--purple))' : 'rgb(var(--amber))' }}>
+        {relayConnected ? <Wifi size={10} /> : <WifiOff size={10} />}
+        Relay
       </div>
 
       {/* Theme Toggle */}
@@ -931,12 +944,26 @@ function SettingsPanel({ onClose }: SettingsPanelProps) {
                     useChatStore.getState().setSessionModel(currentSessionId, localModel);
                   }
                   // 3. 同步到 OpenCode 服务端配置
-                  const configUpdate: Record<string, string> = {};
+                  //    OpenCode PATCH /config 不支持顶层 apiKey/apiBaseUrl
+                  //    必须通过 provider 配置传递，格式：
+                  //    { model: "deepseek/deepseek-chat", provider: { deepseek: { options: { apiKey, baseURL } } } }
+                  const configUpdate: Record<string, unknown> = {};
                   if (localModel) configUpdate['model'] = localModel;
-                  if (localBaseUrl) configUpdate['apiBaseUrl'] = localBaseUrl;
-                  if (localKey) configUpdate['apiKey'] = localKey;
+                  if (localKey || localBaseUrl) {
+                    configUpdate['provider'] = {
+                      deepseek: {
+                        options: {
+                          ...(localKey ? { apiKey: localKey } : {}),
+                          ...(localBaseUrl ? { baseURL: localBaseUrl } : {}),
+                        }
+                      }
+                    };
+                  }
                   if (Object.keys(configUpdate).length > 0) {
-                    await opencodeClient.updateConfig(configUpdate);
+                    const ok = await opencodeClient.updateConfig(configUpdate);
+                    if (!ok) {
+                      console.warn('[Settings] updateConfig 返回 false，服务端可能未接受配置');
+                    }
                   }
                   onClose();
                 } catch {

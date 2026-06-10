@@ -88,7 +88,15 @@ export const ProviderPanel: React.FC = () => {
                       onClick={async () => {
                         const key = prompt(`输入 ${provider.id} 的 API Key:`);
                         if (key) {
-                          await opencodeClient.setAuthProvider(provider.id, { apiKey: key });
+                          // OpenCode PUT /auth/:id 返回 400，改用 PATCH /config 写入 provider.options.apiKey
+                          const ok = await opencodeClient.updateConfig({
+                            provider: {
+                              [provider.id]: {
+                                options: { apiKey: key }
+                              }
+                            }
+                          });
+                          alert(ok ? '✅ 认证已保存' : '⚠️ 保存失败，请检查服务器配置');
                         }
                       }}
                       className="flex items-center gap-1 px-2 py-0.5 rounded text-[9px] text-t-3 hover:text-t-1 hover:bg-bg-3 transition-colors border border-bdr-1 cursor-pointer bg-transparent"

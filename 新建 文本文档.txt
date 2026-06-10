@@ -1,0 +1,48 @@
+PVF-AI-Editor/
+├── src/                          ← 前端源码（React + Ant Design）
+│   ├── components/               ← UI 组件
+│   │   ├── ChatPanel.tsx         ← AI 聊天面板
+│   │   ├── PvfEditor.tsx         ← PVF 文件编辑面板（目录浏览+搜索+编辑器）
+│   │   ├── Sidebar.tsx           ← 侧边栏
+│   │   ├── ThemeToggle.tsx       ← 深色/浅色主题切换
+│   │   └── ToolCallCard.tsx      ← AI 工具调用结果卡片
+│   ├── services/                 ← 服务层
+│   │   ├── opencodeClient.ts     ← OpenCode Agent 客户端（Tauri事件流通信）
+│   │   └── pvfBridge.ts          ← PVFut API 桥接层（直接调PVFut接口）
+│   ├── stores/                   ← 状态管理（Zustand）
+│   │   ├── useChatStore.ts       ← 聊天状态
+│   │   ├── usePvfStore.ts        ← PVF 编辑状态
+│   │   └── useThemeStore.ts      ← 主题状态
+│   ├── types/index.ts            ← TypeScript 类型定义
+│   ├── App.tsx                   ← 主应用组件
+│   └── main.tsx                  ← 入口文件
+│
+├── src-tauri/                    ← Tauri 后端（Rust）
+│   ├── src/
+│   │   ├── lib.rs                ← 核心逻辑：启动opencode进程+事件流转发
+│   │   └── main.rs               ← 程序入口
+│   ├── opencode-bin/             ← 编译出的opencode二进制（自动生成）
+│   │   └── opencode-x86_64-pc-windows-msvc.exe
+│   ├── capabilities/default.json ← Tauri 权限配置
+│   ├── build.rs                  ← 构建脚本（自动编译opencode源码）
+│   ├── Cargo.toml                ← Rust 依赖配置
+│   └── tauri.conf.json           ← Tauri 应用配置
+│
+├── opencode/                     ← OpenCode 源码（你的Agent引擎，可随意修改）
+│   └── packages/opencode/        ← OpenCode 核心代码
+│
+├── mcp-servers/                  ← MCP 工具服务器
+│   └── pvfutility/
+│       ├── index.ts              ← PVF MCP Server（TypeScript，桥接PVFut API）
+│       └── package.json          ← 依赖配置
+│
+├── AGENTS.md                     ← AI 系统提示词（PVF领域知识+工具说明）
+├── opencode.json                 ← OpenCode 配置（模型+MCP Server）
+├── .env                          ← 环境变量（DeepSeek API Key）
+├── .gitignore                    ← Git 忽略规则
+├── .gitmodules                   ← Git 子模块（opencode）
+├── app-icon.svg                  ← 应用图标
+├── index.html                    ← Vite HTML 入口
+├── package.json                  ← 前端依赖配置
+├── tsconfig.json                 ← TypeScript 配置
+└── vite.config.ts                ← Vite 构建配置

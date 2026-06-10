@@ -1,5 +1,6 @@
 # PVF AI Editor - Caddy Reverse Proxy
 # IP 直连模式（无域名，HTTP only）
+# 如有域名，将 :80 替换为 your-domain.com，Caddy 自动申请 TLS
 
 :80 {
 	# 日志
@@ -8,41 +9,48 @@
 		format console
 	}
 
-	# OpenCode REST API
-	handle /api/* {
-		reverse_proxy opencode:8080
-	}
-
-	# OpenCode SSE (Server-Sent Events)
-	handle /sse/* {
-		reverse_proxy opencode:8080 {
-			flush_interval -1
-		}
-	}
-
-	# MCP StreamableHTTP → Tool Relay
-	handle /mcp/* {
-		reverse_proxy relay:9100
-	}
-
-	# 用量/管理 API → Relay
-	handle /admin/* {
-		reverse_proxy relay:9100
-	}
-
-	# 认证 API → Relay
+	# ─── 认证 API → Relay ───
 	handle /auth/* {
 		reverse_proxy relay:9100
 	}
 
-	# Health checks
+	# ─── 管理 API → Relay（需 admin 角色） ───
+	handle /admin/* {
+		reverse_proxy relay:9100
+	}
+
+	# ─── 健康检查 → Relay ───
 	handle /health {
 		reverse_proxy relay:9100
 	}
 
-	# WebSocket 升级 → Relay
-	# Caddy 自动处理 WebSocket 升级
+	# ─── MCP StreamableHTTP → Relay ───
+	handle /mcp/* {
+		reverse_proxy relay:9100
+	}
+
+	# ─── WebSocket → Relay ───
 	handle /ws/* {
 		reverse_proxy relay:9100
+	}
+
+	# ─── OpenCode REST API（通过 Relay 转发） ───
+	handle /api/* {
+		reverse_proxy relay:9100
+	}
+
+	# ─── OpenCode SSE（通过 Relay 转发） ───
+	handle /sse/* {
+		reverse_proxy relay:9100 {
+			flush_interval -1
+		}
+	}
+
+	# ─── 前端 SPA 静态文件 ───
+	# 所有未匹配的请求 → 前端静态文件，SPA fallback 到 index.html
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
 	}
 }

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Server, Plug, Unplug, Plus, RefreshCw, ChevronDown, ChevronRight, Shield,
+  Wifi, WifiOff, Radio,
 } from 'lucide-react';
 import { opencodeClient } from '../services/opencodeClient';
+import { relayClient } from '../services/relayClient';
 import type { McpServerStatus } from '../types';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -16,6 +18,9 @@ export function McpManager() {
   const [showAdd, setShowAdd] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', command: '', args: '', env: '' });
 
+  // Relay 连接状态
+  const [relayConnected, setRelayConnected] = useState(relayClient.isConnected());
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -27,6 +32,11 @@ export function McpManager() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // 监听 Relay 连接状态变化
+  useEffect(() => {
+    return relayClient.onStatusChange((connected) => setRelayConnected(connected));
+  }, []);
 
   const toggleExpand = (name: string) => {
     setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -112,6 +122,34 @@ export function McpManager() {
           </div>
         </div>
       )}
+
+      {/* Relay 状态卡片 */}
+      <div style={{ ...cardStyle, borderLeft: `3px solid ${relayConnected ? 'rgb(var(--purple))' : 'rgb(var(--amber))'}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Radio size={14} style={{ color: relayConnected ? 'rgb(var(--purple))' : 'rgb(var(--amber))' }} />
+          <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>PVFut Tool Relay</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {relayConnected ? <Wifi size={12} style={{ color: 'rgb(var(--green))' }} /> : <WifiOff size={12} style={{ color: 'rgb(var(--amber))' }} />}
+            <span style={{ fontSize: 11, color: relayConnected ? 'rgb(var(--green))' : 'rgb(var(--amber))' }}>
+              {relayConnected ? '已连接' : '未连接'}
+            </span>
+          </div>
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'rgb(var(--t3))' }}>
+          通过 WebSocket 桥接本地 PVFut 到云端 AI，支持 21 个 PVF 工具调用
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'rgb(var(--t3))' }}>
+          MCP 端点: <code style={{ color: 'rgb(var(--cyan))' }}>http://localhost:9100/mcp</code>
+        </div>
+        {!relayConnected && (
+          <button
+            onClick={() => relayClient.connect()}
+            style={{ ...primaryBtnStyle, marginTop: 8, fontSize: 11, padding: '3px 10px' }}
+          >
+            连接 Relay
+          </button>
+        )}
+      </div>
 
       {/* Server List */}
       {servers.length === 0 && !loading && (
