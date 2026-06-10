@@ -18,6 +18,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapse, o
   const { sessions, currentSessionId, createSession, switchSession, deleteSession, setServerSessionId } = useChatStore();
   const logout = useAuthStore((s) => s.logout);
   const user = useAuthStore((s) => s.user);
+  // user 用于 UsagePanel 组件（通过 useAuthStore 内部访问）
+  void user;
   const [hoveredSession, setHoveredSession] = useState<string | null>(null);
 
   const handleNewSession = useCallback(async () => {

@@ -159,7 +159,7 @@ export const useAuthStore = create<AuthState>()(
 
       clearError: () => set({ error: null }),
 
-      getAuthHeader: () => {
+      getAuthHeader: (): Record<string, string> => {
         const { accessToken } = get();
         if (!accessToken) return {};
         return { Authorization: `Bearer ${accessToken}` };

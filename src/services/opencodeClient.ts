@@ -4,7 +4,6 @@ import type {
   SearchResult, FileSearchResult, SymbolSearchResult,
   ConfigInfo, ProjectInfo, PathInfo, LspStatus,
 } from '../types';
-import { useModelConfigStore } from '../stores/useModelConfigStore';
 
 /** OpenCode 服务器默认端口 */
 const OPENCODE_DEFAULT_PORT = 4096;
@@ -1595,45 +1594,46 @@ export class OpenCodeClient {
     const parts = result?.parts ?? [];
 
     // 更新 token 统计
-    if (info?.tokens) {
-      const total = (info.tokens.input || 0) + (info.tokens.output || 0) + (info.tokens.reasoning || 0);
+    if (info?.tokens && typeof info.tokens === 'object') {
+      const tk = info.tokens as Record<string, unknown>;
       onEvent({
         type: 'step_ended',
         data: {
           sessionID: sessionId,
           cost: info.cost,
-          tokens: info.tokens,
+          tokens: tk,
           finish: info.finish,
         },
       });
     }
 
     // 5. 从 parts 中提取文本和工具调用
-    for (const part of parts) {
+    for (const rawPart of parts) {
+      const part = rawPart as Record<string, unknown>;
       if (part.type === 'text' && part.text) {
         onEvent({
           type: 'message',
           data: {
-            content: part.text,
-            modelId: info?.modelID,
+            content: part.text as string,
+            modelId: info?.modelID as string | undefined,
           },
         });
       } else if (part.type === 'tool-invocation') {
-        const toolInv = part.toolInvocation;
+        const toolInv = part.toolInvocation as Record<string, unknown> | undefined;
         if (toolInv) {
           onEvent({
             type: 'tool_call',
             data: {
-              id: toolInv.toolCallId || toolInv.callID || '',
-              name: toolInv.toolName || toolInv.name || 'unknown',
-              arguments: toolInv.args || toolInv.arguments || {},
+              id: (toolInv.toolCallId || toolInv.callID || '') as string,
+              name: (toolInv.toolName || toolInv.name || 'unknown') as string,
+              arguments: (toolInv.args || toolInv.arguments || {}) as Record<string, unknown>,
             },
           });
           if (toolInv.state === 'result' || toolInv.state === 'completed') {
             onEvent({
               type: 'tool_result',
               data: {
-                id: toolInv.toolCallId || toolInv.callID || '',
+                id: (toolInv.toolCallId || toolInv.callID || '') as string,
                 result: toolInv.result,
                 status: 'completed',
               },
@@ -1645,7 +1645,7 @@ export class OpenCodeClient {
       } else if (part.type === 'reasoning' && part.text) {
         onEvent({
           type: 'reasoning',
-          data: { content: part.text },
+          data: { content: part.text as string },
         });
       }
     }
